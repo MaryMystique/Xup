@@ -1,0 +1,71 @@
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mongodb"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id              String   @id @default(auto()) @map("_id") @db.ObjectId
+  email           String   @unique
+  password        String
+  name            String
+  role            String   @default("agent")
+  status          String   @default("offline")
+  createdAt       DateTime @default(now())
+  
+  chats           Chat[]   @relation("AgentChats")
+  cannedResponses CannedResponse[]
+}
+
+model Customer {
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  name        String
+  email       String
+  ipAddress   String?
+  firstSeen   DateTime @default(now())
+  totalChats  Int      @default(0)
+  
+  chats       Chat[]
+}
+
+model Chat {
+  id         String    @id @default(auto()) @map("_id") @db.ObjectId
+  customerId String    @db.ObjectId
+  agentId    String?   @db.ObjectId
+  status     String    @default("waiting")
+  priority   String    @default("normal")
+  startedAt  DateTime  @default(now())
+  endedAt    DateTime?
+  rating     Int?
+  
+  customer   Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  agent      User?     @relation("AgentChats", fields: [agentId], references: [id])
+  messages   Message[]
+}
+
+model Message {
+  id         String   @id @default(auto()) @map("_id") @db.ObjectId
+  chatId     String   @db.ObjectId
+  senderType String
+  senderId   String
+  content    String
+  timestamp  DateTime @default(now())
+  readStatus Boolean  @default(false)
+  
+  chat       Chat     @relation(fields: [chatId], references: [id], onDelete: Cascade)
+}
+
+model CannedResponse {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  agentId   String   @db.ObjectId
+  title     String
+  message   String
+  createdAt DateTime @default(now())
+  
+  agent     User     @relation(fields: [agentId], references: [id], onDelete: Cascade)
+}
+
