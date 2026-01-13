@@ -1,21 +1,15 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
-import { useSocket } from '../hooks/useSocket';
+import { io, Socket } from 'socket.io-client';
 
 /**
  * Customer Chat Widget
  * Embeddable chat interface for customers
- * 
- * FEATURES:
- * - Chat bubble (bottom right)
- * - Opens chat window
- * - Real-time messaging
- * - No login required (just name + email)
  */
 
 interface Message {
-  id: string;
+  id?: string;
   content: string;
   senderType: string;
   timestamp: string;
@@ -23,7 +17,8 @@ interface Message {
 }
 
 export default function WidgetPage() {
-  const { socket, isConnected } = useSocket();
+  const [socket, setSocket] = useState<Socket | null>(null);
+  const [isConnected, setIsConnected] = useState(false);
   
   const [isOpen, setIsOpen] = useState(false);
   const [chatId, setChatId] = useState<string | null>(null);
@@ -37,9 +32,38 @@ export default function WidgetPage() {
   const [customerName, setCustomerName] = useState('');
   const [customerEmail, setCustomerEmail] = useState('');
   const [initialMessage, setInitialMessage] = useState('');
+  const [error, setError] = useState('');
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Initialize socket connection
+  useEffect(() => {
+    const socketInstance = io(process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000', {
+      transports: ['websocket', 'polling'],
+    });
+
+    socketInstance.on('connect', () => {
+      console.log('✅ Widget socket connected');
+      setIsConnected(true);
+    });
+
+    socketInstance.on('disconnect', () => {
+      console.log('❌ Widget socket disconnected');
+      setIsConnected(false);
+    });
+
+    socketInstance.on('connect_error', (error) => {
+      console.error('Socket connection error:', error);
+      setIsConnected(false);
+    });
+
+    setSocket(socketInstance);
+
+    return () => {
+      socketInstance.disconnect();
+    };
+  }, []);
 
   // Join socket room when chat is created
   useEffect(() => {
@@ -74,17 +98,21 @@ export default function WidgetPage() {
 
   const handleStartChat = async (e: React.FormEvent) => {
     e.preventDefault();
+    setError('');
 
-    if (!customerName || !customerEmail || !initialMessage) return;
+    if (!customerName.trim() || !customerEmail.trim() || !initialMessage.trim()) {
+      setError('Please fill in all fields');
+      return;
+    }
 
     try {
       const response = await fetch('/api/chats', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          customerName,
-          customerEmail,
-          initialMessage,
+          customerName: customerName.trim(),
+          customerEmail: customerEmail.trim(),
+          initialMessage: initialMessage.trim(),
         }),
       });
 
@@ -98,11 +126,22 @@ export default function WidgetPage() {
             senderType: 'customer',
             timestamp: new Date().toISOString(),
           },
+          {
+            id: '2',
+            content: 'An agent will be with you shortly...',
+            senderType: 'system',
+            timestamp: new Date().toISOString(),
+          },
         ]);
         setShowForm(false);
+        setIsOpen(true);
+      } else {
+        const data = await response.json();
+        setError(data.error || 'Failed to start chat');
       }
     } catch (error) {
       console.error('Error starting chat:', error);
+      setError('Something went wrong. Please try again.');
     }
   };
 
@@ -112,18 +151,31 @@ export default function WidgetPage() {
     if (!newMessage.trim() || !socket || !chatId) return;
 
     // Stop typing
-    socket.emit('stop-typing', { chatId });
+    if (isTyping) {
+      socket.emit('stop-typing', { chatId });
+      setIsTyping(false);
+    }
 
-    // Send message
-    socket.emit('send-message', {
+    const messageData = {
       chatId,
-      content: newMessage,
+      content: newMessage.trim(),
       senderType: 'customer',
       senderId: customerEmail,
       senderName: customerName,
-    });
+    };
+
+    // Send message via socket
+    socket.emit('send-message', messageData);
+
+    // Optimistically add message to UI
+    setMessages(prev => [...prev, {
+      content: newMessage.trim(),
+      senderType: 'customer',
+      timestamp: new Date().toISOString(),
+    }]);
 
     setNewMessage('');
+    scrollToBottom();
   };
 
   const handleTyping = () => {
@@ -151,6 +203,7 @@ export default function WidgetPage() {
         <button
           onClick={() => setIsOpen(true)}
           className="bg-blue-600 hover:bg-blue-700 text-white rounded-full p-4 shadow-lg transition-all hover:scale-110"
+          aria-label="Open chat"
         >
           <svg
             className="w-6 h-6"
@@ -170,18 +223,19 @@ export default function WidgetPage() {
 
       {/* CHAT WINDOW */}
       {isOpen && (
-        <div className="bg-white rounded-lg shadow-2xl w-96 h-125 flex flex-col">
+        <div className="bg-white rounded-lg shadow-2xl w-96 h-125 flex flex-col border border-gray-200">
           {/* HEADER */}
           <div className="bg-blue-600 text-white p-4 rounded-t-lg flex justify-between items-center">
             <div>
-              <h3 className="font-bold">Xup Support</h3>
+              <h3 className="font-bold text-lg">Xup Support</h3>
               <p className="text-sm opacity-90">
-                {isConnected ? 'Online' : 'Connecting...'}
+                {isConnected ? '● Online' : '○ Connecting...'}
               </p>
             </div>
             <button
               onClick={() => setIsOpen(false)}
-              className="text-white hover:bg-blue-700 rounded p-1"
+              className="text-white hover:bg-blue-700 rounded p-1 transition"
+              aria-label="Close chat"
             >
               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -192,52 +246,75 @@ export default function WidgetPage() {
           {/* FORM OR CHAT */}
           {showForm ? (
             // INITIAL FORM
-            <form onSubmit={handleStartChat} className="flex-1 p-4 space-y-4">
-              <div>
-                <label className="block text-sm font-medium mb-1">Your Name</label>
-                <input
-                  type="text"
-                  value={customerName}
-                  onChange={(e) => setCustomerName(e.target.value)}
-                  className="w-full px-3 py-2 border rounded-md focus:ring-2 focus:ring-blue-500 focus:outline-none"
-                  required
-                />
-              </div>
+            <div className="flex-1 p-4 overflow-y-auto">
+              <form onSubmit={handleStartChat} className="space-y-4">
+                <div>
+                  <p className="text-gray-700 mb-4">
+                    Hi! Fill in the details below to start chatting with our support team.
+                  </p>
+                </div>
 
-              <div>
-                <label className="block text-sm font-medium mb-1">Email</label>
-                <input
-                  type="email"
-                  value={customerEmail}
-                  onChange={(e) => setCustomerEmail(e.target.value)}
-                  className="w-full px-3 py-2 border rounded-md focus:ring-2 focus:ring-blue-500 focus:outline-none"
-                  required
-                />
-              </div>
+                {error && (
+                  <div className="p-3 bg-red-50 border border-red-200 rounded-md text-sm text-red-800">
+                    {error}
+                  </div>
+                )}
 
-              <div>
-                <label className="block text-sm font-medium mb-1">How can we help?</label>
-                <textarea
-                  value={initialMessage}
-                  onChange={(e) => setInitialMessage(e.target.value)}
-                  className="w-full px-3 py-2 border rounded-md focus:ring-2 focus:ring-blue-500 focus:outline-none"
-                  rows={3}
-                  required
-                />
-              </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-900 mb-1">
+                    Your Name *
+                  </label>
+                  <input
+                    type="text"
+                    value={customerName}
+                    onChange={(e) => setCustomerName(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:outline-none text-gray-900 bg-white"
+                    placeholder="John Doe"
+                    required
+                  />
+                </div>
 
-              <button
-                type="submit"
-                className="w-full py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
-              >
-                Start Chat
-              </button>
-            </form>
+                <div>
+                  <label className="block text-sm font-medium text-gray-900 mb-1">
+                    Email *
+                  </label>
+                  <input
+                    type="email"
+                    value={customerEmail}
+                    onChange={(e) => setCustomerEmail(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:outline-none text-gray-900 bg-white"
+                    placeholder="you@example.com"
+                    required
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-900 mb-1">
+                    How can we help? *
+                  </label>
+                  <textarea
+                    value={initialMessage}
+                    onChange={(e) => setInitialMessage(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:outline-none text-gray-900 bg-white"
+                    rows={4}
+                    placeholder="Describe your issue..."
+                    required
+                  />
+                </div>
+
+                <button
+                  type="submit"
+                  className="w-full py-3 bg-blue-600 text-white rounded-md hover:bg-blue-700 font-medium transition"
+                >
+                  Start Chat
+                </button>
+              </form>
+            </div>
           ) : (
             // CHAT INTERFACE
             <>
               {/* MESSAGES */}
-              <div className="flex-1 overflow-y-auto p-4 space-y-3">
+              <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-gray-50">
                 {messages.map((message, index) => (
                   <div
                     key={message.id || index}
@@ -246,22 +323,30 @@ export default function WidgetPage() {
                     }`}
                   >
                     <div
-                      className={`max-w-[70%] px-3 py-2 rounded-lg ${
+                      className={`max-w-[75%] px-4 py-2 rounded-lg ${
                         message.senderType === 'customer'
                           ? 'bg-blue-600 text-white'
                           : message.senderType === 'system'
-                          ? 'bg-gray-100 text-gray-600 text-xs text-center'
-                          : 'bg-gray-200 text-gray-900'
+                          ? 'bg-gray-200 text-gray-700 text-xs text-center w-full'
+                          : 'bg-white text-gray-900 border border-gray-200'
                       }`}
                     >
-                      <p className="text-sm">{message.content}</p>
+                      <p className="text-sm wrap-break-words">{message.content}</p>
+                      <p className={`text-xs mt-1 ${
+                        message.senderType === 'customer' ? 'text-blue-100' : 'text-gray-500'
+                      }`}>
+                        {new Date(message.timestamp).toLocaleTimeString([], { 
+                          hour: '2-digit', 
+                          minute: '2-digit' 
+                        })}
+                      </p>
                     </div>
                   </div>
                 ))}
 
                 {agentTyping && (
                   <div className="flex justify-start">
-                    <div className="bg-gray-200 px-3 py-2 rounded-lg">
+                    <div className="bg-white border border-gray-200 px-4 py-2 rounded-lg">
                       <p className="text-sm text-gray-600">Agent is typing...</p>
                     </div>
                   </div>
@@ -271,7 +356,7 @@ export default function WidgetPage() {
               </div>
 
               {/* INPUT */}
-              <div className="border-t p-4">
+              <div className="border-t border-gray-200 p-4 bg-white rounded-b-lg">
                 <form onSubmit={handleSendMessage} className="flex gap-2">
                   <input
                     type="text"
@@ -281,16 +366,20 @@ export default function WidgetPage() {
                       handleTyping();
                     }}
                     placeholder="Type a message..."
-                    className="flex-1 px-3 py-2 border rounded-md focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                    className="flex-1 px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:outline-none text-gray-900 bg-white"
+                    disabled={!isConnected}
                   />
                   <button
                     type="submit"
-                    disabled={!newMessage.trim()}
-                    className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-300"
+                    disabled={!newMessage.trim() || !isConnected}
+                    className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition font-medium"
                   >
                     Send
                   </button>
                 </form>
+                {!isConnected && (
+                  <p className="text-xs text-red-600 mt-2">Connecting to server...</p>
+                )}
               </div>
             </>
           )}

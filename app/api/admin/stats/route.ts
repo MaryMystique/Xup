@@ -3,13 +3,10 @@ import { prisma } from '@/lib/db';
 import { getTokenFromCookies, verifyToken } from '@/lib/auth';
 
 /**
- * DELETE /api/admin/agents/[id]
- * Delete an agent (admin only)
+ * GET /api/admin/stats
+ * Get platform statistics (admin only)
  */
-export async function DELETE(
-  request: Request,
-  { params }: { params: { id: string } }
-) {
+export async function GET(request: Request) {
   try {
     const cookieHeader = request.headers.get('cookie');
     const token = getTokenFromCookies(cookieHeader);
@@ -23,27 +20,27 @@ export async function DELETE(
       return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
     }
 
-    const agentId = params.id;
-
-    // Prevent admin from deleting themselves
-    if (decoded.userId === agentId) {
-      return NextResponse.json(
-        { error: 'Cannot delete your own account' },
-        { status: 400 }
-      );
-    }
-
-    // Delete agent
-    await prisma.user.delete({
-      where: { id: agentId },
-    });
+    // Get stats
+    const [totalChats, activeChats, resolvedChats, totalAgents] = await Promise.all([
+      prisma.chat.count(),
+      prisma.chat.count({ where: { status: 'active' } }),
+      prisma.chat.count({ where: { status: 'resolved' } }),
+      prisma.user.count(),
+    ]);
 
     return NextResponse.json(
-      { message: 'Agent deleted successfully' },
+      {
+        stats: {
+          totalChats,
+          activeChats,
+          resolvedChats,
+          totalAgents,
+        },
+      },
       { status: 200 }
     );
   } catch (error) {
-    console.error('Delete agent error:', error);
+    console.error('Fetch stats error:', error);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }

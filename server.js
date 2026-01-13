@@ -38,7 +38,9 @@ app.prepare().then(() => {
   // Initialize Socket.io
   const io = new Server(server, {
     cors: {
-      origin: '*',
+      origin: process.env.NODE_ENV === 'production'
+      ? process.env.NEXT_PUBLIC_APP_URL
+      : '*',
       methods: ['GET', 'POST'],
     },
   });
