@@ -40,7 +40,8 @@ export default function WidgetPage() {
   // Initialize socket connection
   useEffect(() => {
     const socketInstance = io(process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000', {
-      transports: ['websocket', 'polling'],
+      transports: ['polling'],
+      path: '/api/socketio',
     });
 
     socketInstance.on('connect', () => {
